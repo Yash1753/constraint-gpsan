@@ -22,7 +22,7 @@ def main():
     
     # Use subset for reasonable runtime
     # Full dataset (188) will take longer but is correct
-    graphs = loader.load_mutag(subset_size=50)
+    graphs = loader.load_mutag(subset_size=100)
     
     # Define constraints
     constraints = MUTAGConstraints.basic_chemical()

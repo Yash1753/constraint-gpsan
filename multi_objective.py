@@ -1,13 +1,3 @@
-"""
-NOVEL CONTRIBUTION 3: Multi-Objective Constraint Optimization
-Optimized for MUTAG dataset
-
-Balance multiple conflicting objectives:
-- Maximize pattern size
-- Maximize support
-- Minimize complexity
-- Maximize constraint satisfaction
-"""
 
 import time
 import numpy as np
@@ -20,7 +10,6 @@ from utils.visualization import PatternVisualizer
 
 @dataclass
 class PatternScore:
-    """Multi-objective scores for a pattern"""
     pattern: Pattern
     support: int
     size_score: float
@@ -31,10 +20,8 @@ class PatternScore:
     weighted_score: float = 0.0
     
     def dominates(self, other: 'PatternScore') -> bool:
-        """Check if this pattern Pareto-dominates another"""
         better_in_any = False
         
-        # Check each objective (maximize size, support, constraint; minimize complexity)
         objectives = [
             (self.size_score, other.size_score, True),
             (self.support_score, other.support_score, True),
@@ -62,11 +49,7 @@ class PatternScore:
                 f"{self.complexity_score:.2f}, {self.constraint_score:.2f}])")
 
 class MultiObjectiveGSPAN:
-    """
-    GSPAN with multi-objective pattern evaluation
-    Finds Pareto-optimal patterns balancing multiple criteria
-    """
-    
+   
     def __init__(self,
                  database: List[Graph],
                  min_support: float,
@@ -79,8 +62,7 @@ class MultiObjectiveGSPAN:
         self.constraints = constraints or []
         self.constraint_manager = ConstraintManager(self.constraints)
         self.verbose = verbose
-        
-        # Objective weights
+     
         self.objective_weights = objectives or {
             'size': 0.25,
             'support': 0.35,
@@ -88,14 +70,11 @@ class MultiObjectiveGSPAN:
             'constraints': 0.20
         }
         
-        # Normalize weights
         total = sum(self.objective_weights.values())
         self.objective_weights = {k: v/total for k, v in self.objective_weights.items()}
         
-        # Label statistics
         self.label_stats = self._compute_label_stats()
         
-        # Statistics
         self.stats = {
             'patterns_evaluated': 0,
             'pareto_optimal_found': 0,
@@ -106,7 +85,6 @@ class MultiObjectiveGSPAN:
             self._print_initialization()
     
     def _print_initialization(self):
-        """Print initialization info"""
         print(f"\n{'='*70}")
         print(f"{'MULTI-OBJECTIVE PATTERN MINING':^70}")
         print(f"{'='*70}")
@@ -126,7 +104,7 @@ class MultiObjectiveGSPAN:
         print(f"{'='*70}\n")
     
     def _compute_label_stats(self) -> Dict:
-        """Compute label statistics"""
+        
         stats = {
             'vertex_counts': defaultdict(int),
             'vertex_labels': defaultdict(set)
@@ -141,22 +119,16 @@ class MultiObjectiveGSPAN:
         return stats
     
     def _compute_complexity(self, pattern: Pattern) -> float:
-        """
-        Compute pattern complexity (lower is better)
-        Based on edge-to-vertex ratio
-        """
+        
         if len(pattern.vertices) == 0:
             return 0.0
         
         edge_vertex_ratio = len(pattern.edges) / len(pattern.vertices)
-        
-        # Normalize to [0, 1] assuming max ratio is 3 (dense molecular graphs)
         complexity = min(edge_vertex_ratio / 3.0, 1.0)
         
         return complexity
     
     def _compute_constraint_satisfaction(self, pattern: Pattern) -> float:
-        """Compute degree of constraint satisfaction [0, 1]"""
         if not self.constraints:
             return 1.0
         
@@ -168,14 +140,12 @@ class MultiObjectiveGSPAN:
         return satisfied / len(self.constraints)
     
     def _evaluate_pattern(self, pattern: Pattern, support: int) -> PatternScore:
-        """Compute multi-objective scores for pattern"""
+       
         self.stats['patterns_evaluated'] += 1
         
-        # Compute max values for normalization
-        max_size = 20  # Reasonable max for MUTAG molecules
+        max_size = 20
         max_support = len(self.database)
         
-        # Normalize scores to [0, 1]
         size_score = min(len(pattern.vertices) / max_size, 1.0)
         support_score = support / max_support
         complexity_score = self._compute_complexity(pattern)
@@ -191,7 +161,7 @@ class MultiObjectiveGSPAN:
         )
     
     def _find_pareto_frontier(self, scored_patterns: List[PatternScore]) -> List[PatternScore]:
-        """Find Pareto-optimal patterns using dominance relation"""
+        
         pareto_optimal = []
         
         for i, pattern1 in enumerate(scored_patterns):
@@ -213,7 +183,6 @@ class MultiObjectiveGSPAN:
         return pareto_optimal
     
     def _compute_weighted_score(self, scored_pattern: PatternScore) -> float:
-        """Compute weighted sum score for ranking within Pareto front"""
         score = (
             self.objective_weights['size'] * scored_pattern.size_score +
             self.objective_weights['support'] * scored_pattern.support_score +
@@ -223,21 +192,18 @@ class MultiObjectiveGSPAN:
         return score
     
     def mine_pareto_optimal(self) -> Tuple[List[PatternScore], List[PatternScore]]:
-        """Mine and return Pareto-optimal patterns"""
+        
         if self.verbose:
             print(f"{'─'*70}")
             print(f"Starting Multi-Objective Mining")
             print(f"{'─'*70}\n")
         
         start_time = time.time()
-        
-        # Generate candidate patterns
         if self.verbose:
             print("Generating candidate patterns...")
         
         all_patterns = []
-        
-        # Generate single-vertex patterns
+ 
         for label, count in self.label_stats['vertex_counts'].items():
             if count >= self.min_support_count:
                 p = Pattern()
@@ -249,7 +215,6 @@ class MultiObjectiveGSPAN:
         if self.verbose:
             print(f"  Generated {len(all_patterns)} patterns\n")
         
-        # Evaluate all patterns on multiple objectives
         if self.verbose:
             print("Evaluating patterns on multiple objectives...")
         
@@ -260,8 +225,7 @@ class MultiObjectiveGSPAN:
         
         if self.verbose:
             print(f"  Evaluated {len(scored_patterns)} patterns\n")
-        
-        # Find Pareto frontier
+      
         if self.verbose:
             print("Computing Pareto frontier...")
         
@@ -269,8 +233,6 @@ class MultiObjectiveGSPAN:
         
         if self.verbose:
             print(f"  Found {len(pareto_optimal)} Pareto-optimal patterns\n")
-        
-        # Rank within Pareto front using weighted sum
         for pattern_score in pareto_optimal:
             pattern_score.weighted_score = self._compute_weighted_score(pattern_score)
         
@@ -285,7 +247,6 @@ class MultiObjectiveGSPAN:
     
     def _print_results(self, all_patterns: List[PatternScore], 
                       pareto_optimal: List[PatternScore]):
-        """Print multi-objective mining results"""
         print(f"{'='*70}")
         print(f"{'MULTI-OBJECTIVE MINING COMPLETE':^70}")
         print(f"{'='*70}")
@@ -305,8 +266,6 @@ class MultiObjectiveGSPAN:
             print(f"  {i:<6} {ps.size_score:<6.3f} {ps.support_score:<6.3f} "
                   f"{ps.complexity_score:<7.3f} {ps.constraint_score:<7.3f} "
                   f"{ps.weighted_score:<8.3f}")
-        
-        # Dominated patterns statistics
         dominated = [p for p in all_patterns if p.pareto_rank > 0]
         if dominated:
             print(f"\n📉 Dominated Patterns ({len(dominated)}):")
@@ -315,7 +274,6 @@ class MultiObjectiveGSPAN:
             print(f"  Average complexity: {np.mean([p.complexity_score for p in dominated]):.3f}")
             print(f"  Average constraint satisfaction: {np.mean([p.constraint_score for p in dominated]):.3f}")
         
-        # Pareto front visualization (text-based)
         print(f"\n📈 Pareto Front Visualization (Size vs Support):")
         print(f"  {'─'*66}")
         
@@ -325,7 +283,6 @@ class MultiObjectiveGSPAN:
     
     def _plot_pareto_front_ascii(self, all_patterns: List[PatternScore], 
                                  pareto_optimal: List[PatternScore]):
-        """Create ASCII visualization of Pareto front"""
         # Create grid
         width, height = 50, 15
         grid = [[' ' for _ in range(width)] for _ in range(height)]
@@ -344,8 +301,7 @@ class MultiObjectiveGSPAN:
                 y = int((1 - ps.size_score) * (height - 1))
                 if 0 <= x < width and 0 <= y < height and grid[y][x] == ' ':
                     grid[y][x] = '·'
-        
-        # Print grid
+
         print("  Size")
         print("    ↑")
         for row in grid:
@@ -354,36 +310,30 @@ class MultiObjectiveGSPAN:
         print("\n    Legend: █ = Pareto-optimal, · = Dominated")
 
 def main():
-    """Run multi-objective optimization on MUTAG"""
-    
     print(f"\n{'='*70}")
     print(f"{'MUTAG - MULTI-OBJECTIVE OPTIMIZATION':^70}")
     print(f"{'='*70}\n")
-    
-    # Load MUTAG
+
     loader = DatasetLoader()
     graphs = loader.load_mutag(subset_size=100)
     
-    # Define constraints
     constraints = MUTAGConstraints.basic_chemical()
     
     print(f"Constraints:")
     for c in constraints:
         print(f"  - {c.name}")
     
-    # Define objective weights
     objectives = {
-        'size': 0.25,        # Larger patterns
-        'support': 0.35,     # Higher support (most important)
-        'complexity': 0.20,  # Simpler patterns
-        'constraints': 0.20  # Constraint satisfaction
+        'size': 0.25,        
+        'support': 0.35,     
+        'complexity': 0.20,  
+        'constraints': 0.20  
     }
     
     print(f"\nObjective Weights:")
     for obj, weight in objectives.items():
         print(f"  {obj}: {weight}")
     
-    # Run multi-objective mining
     miner = MultiObjectiveGSPAN(
         database=graphs,
         min_support=0.15,
@@ -393,18 +343,15 @@ def main():
     )
     
     all_patterns, pareto_optimal = miner.mine_pareto_optimal()
-    
-    # Visualize
+   
     print(f"\nGenerating visualizations...")
     visualizer = PatternVisualizer()
     
-    # Convert PatternScore to (Pattern, support) tuples for visualization
     pareto_tuples = [(ps.pattern, ps.support) for ps in pareto_optimal]
     
     fig = visualizer.plot_pattern_distribution(pareto_tuples,
                                                title="MUTAG Pareto-Optimal Patterns")
     
-    # Save results
     import os
     os.makedirs('results', exist_ok=True)
     visualizer.save_all_plots('results')
