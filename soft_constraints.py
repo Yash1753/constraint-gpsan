@@ -1,8 +1,6 @@
 """
-NOVEL CONTRIBUTION 4: Soft/Probabilistic Constraint Satisfaction
-Optimized for MUTAG dataset
-
-Constraints have satisfaction degrees (0-1) instead of binary pass/fail
+NOVEL CONTRIBUTION 4: Soft Constraint Satisfaction with PROPER GSPAN
+Integrates fuzzy constraints with real GSPAN algorithm
 """
 
 import time
@@ -11,7 +9,8 @@ from typing import List, Tuple, Dict
 from dataclasses import dataclass
 from collections import defaultdict
 from utils.graph_loader import Graph, Pattern, DatasetLoader
-from utils.constraints import Constraint, ConstraintManager, MUTAGConstraints
+from utils.constraints import Constraint, MUTAGConstraints
+from utils.gspan_algorithm import ProperGSPAN  # ← Use proper GSPAN!
 from utils.visualization import PatternVisualizer
 
 @dataclass
@@ -80,28 +79,38 @@ class SoftConstraint:
         # Default: binary
         return 0.0
 
-class SoftConstraintGSPAN:
+class SoftConstraintProperGSPAN:
     """
-    GSPAN with soft/fuzzy constraint satisfaction
-    Patterns ranked by weighted satisfaction score
+    Proper GSPAN with soft constraint post-filtering and ranking
+    
+    APPROACH: 
+    1. Use proper GSPAN to mine ALL patterns (with hard constraints)
+    2. Post-process with soft constraints for ranking
     """
     
     def __init__(self,
                  database: List[Graph],
                  min_support: float,
                  soft_constraints: List[SoftConstraint],
+                 hard_constraints: List[Constraint] = None,
                  min_satisfaction: float = 0.6,
+                 max_pattern_size: int = 6,
                  verbose: bool = True):
         
         self.database = database
-        self.min_support_count = max(1, int(min_support * len(database)))
+        self.min_support = min_support
         self.soft_constraints = soft_constraints
+        self.hard_constraints = hard_constraints or []
         self.min_satisfaction = min_satisfaction
+        self.max_pattern_size = max_pattern_size
         self.verbose = verbose
         
-        # Separate required vs optional
-        self.required_constraints = [sc for sc in soft_constraints if sc.required]
-        self.optional_constraints = [sc for sc in soft_constraints if not sc.required]
+        # Separate required soft constraints (use as hard constraints)
+        self.required_soft_constraints = [sc for sc in soft_constraints if sc.required]
+        
+        # Add required soft constraints to hard constraints
+        for sc in self.required_soft_constraints:
+            self.hard_constraints.append(sc.constraint)
         
         # Normalize weights
         total_weight = sum(sc.weight for sc in soft_constraints)
@@ -109,16 +118,15 @@ class SoftConstraintGSPAN:
             for sc in soft_constraints:
                 sc.normalized_weight = sc.weight / total_weight
         
-        # Label statistics
-        self.label_stats = self._compute_label_stats()
-        
         # Statistics
         self.stats = {
+            'patterns_mined': 0,
             'patterns_evaluated': 0,
             'patterns_accepted': 0,
-            'patterns_rejected_required': 0,
             'patterns_rejected_satisfaction': 0,
-            'runtime': 0
+            'mining_runtime': 0,
+            'evaluation_runtime': 0,
+            'total_runtime': 0
         }
         
         if self.verbose:
@@ -127,48 +135,98 @@ class SoftConstraintGSPAN:
     def _print_initialization(self):
         """Print initialization info"""
         print(f"\n{'='*70}")
-        print(f"{'SOFT CONSTRAINT SATISFACTION MINING':^70}")
+        print(f"{'SOFT CONSTRAINT PROPER GSPAN':^70}")
         print(f"{'='*70}")
         print(f"  Database: {len(self.database)} graphs")
-        print(f"  Min support: {self.min_support_count}")
+        print(f"  Min support: {int(self.min_support * len(self.database))}")
         print(f"  Min satisfaction: {self.min_satisfaction:.2f}")
-        print(f"  Required constraints: {len(self.required_constraints)}")
-        print(f"  Optional constraints: {len(self.optional_constraints)}")
+        print(f"  Max pattern size: {self.max_pattern_size}")
         
-        print(f"\n  Soft Constraints:")
+        print(f"\n  Hard Constraints ({len(self.hard_constraints)}):")
+        for i, c in enumerate(self.hard_constraints, 1):
+            print(f"    {i}. {c.name}")
+        
+        print(f"\n  Soft Constraints ({len(self.soft_constraints)}):")
         for i, sc in enumerate(self.soft_constraints, 1):
             req_str = " [REQUIRED]" if sc.required else ""
             print(f"    {i}. {sc.constraint.name}: weight={sc.weight:.2f}{req_str}")
         
         print(f"{'='*70}\n")
     
-    def _compute_label_stats(self) -> Dict:
-        """Compute label statistics"""
-        stats = {
-            'vertex_counts': defaultdict(int),
-            'vertex_labels': defaultdict(set)
-        }
+    def mine(self) -> List[Tuple[Pattern, int, float, Dict]]:
+        """
+        Main mining with soft constraints
         
-        for graph in self.database:
-            for v in graph.vertices:
-                if graph.gid not in stats['vertex_labels'][v.label]:
-                    stats['vertex_counts'][v.label] += 1
-                stats['vertex_labels'][v.label].add(graph.gid)
+        Returns:
+            List of (pattern, support, satisfaction_score, details)
+        """
         
-        return stats
-    
-    def _check_required_constraints(self, pattern: Pattern) -> bool:
-        """Check all required constraints (hard filter)"""
-        for sc in self.required_constraints:
-            if not sc.constraint.check(pattern):
-                self.stats['patterns_rejected_required'] += 1
-                return False
-        return True
+        start_time = time.time()
+        
+        # STEP 1: Use proper GSPAN to mine patterns
+        if self.verbose:
+            print(f"{'─'*70}")
+            print("STEP 1: Mining patterns with Proper GSPAN")
+            print(f"{'─'*70}\n")
+        
+        mining_start = time.time()
+        
+        gspan = ProperGSPAN(
+            database=self.database,
+            min_support=self.min_support,
+            constraints=self.hard_constraints,
+            max_pattern_size=self.max_pattern_size,
+            verbose=self.verbose
+        )
+        
+        mined_patterns = gspan.mine()  # Returns List[Tuple[Pattern, int]]
+        self.stats['patterns_mined'] = len(mined_patterns)
+        self.stats['mining_runtime'] = time.time() - mining_start
+        
+        if self.verbose:
+            print(f"\n✓ Mined {len(mined_patterns)} patterns in {self.stats['mining_runtime']:.2f}s")
+        
+        # STEP 2: Evaluate with soft constraints
+        if self.verbose:
+            print(f"\n{'─'*70}")
+            print("STEP 2: Evaluating patterns with Soft Constraints")
+            print(f"{'─'*70}\n")
+        
+        eval_start = time.time()
+        
+        scored_patterns = []
+        
+        for pattern, support in mined_patterns:
+            self.stats['patterns_evaluated'] += 1
+            
+            # Compute soft constraint satisfaction
+            score, details = self._compute_satisfaction_score(pattern)
+            
+            # Accept if above threshold
+            if score >= self.min_satisfaction:
+                scored_patterns.append((pattern, support, score, details))
+                self.stats['patterns_accepted'] += 1
+            else:
+                self.stats['patterns_rejected_satisfaction'] += 1
+        
+        # Sort by satisfaction score (descending)
+        scored_patterns.sort(key=lambda x: x[2], reverse=True)
+        
+        self.stats['evaluation_runtime'] = time.time() - eval_start
+        self.stats['total_runtime'] = time.time() - start_time
+        
+        if self.verbose:
+            print(f"✓ Evaluated {self.stats['patterns_evaluated']} patterns")
+            print(f"✓ Accepted {self.stats['patterns_accepted']} patterns")
+            print(f"✓ Evaluation took {self.stats['evaluation_runtime']:.2f}s\n")
+        
+        if self.verbose:
+            self._print_results(scored_patterns)
+        
+        return scored_patterns
     
     def _compute_satisfaction_score(self, pattern: Pattern) -> Tuple[float, Dict[str, Dict]]:
         """Compute weighted satisfaction score"""
-        self.stats['patterns_evaluated'] += 1
-        
         satisfaction_details = {}
         total_score = 0.0
         
@@ -187,88 +245,24 @@ class SoftConstraintGSPAN:
         
         return total_score, satisfaction_details
     
-    def mine_with_soft_constraints(self) -> List[Tuple[Pattern, int, float, Dict]]:
-        """Mine patterns with soft constraint evaluation"""
-        if self.verbose:
-            print(f"{'─'*70}")
-            print(f"Starting Soft Constraint Mining")
-            print(f"{'─'*70}\n")
-        
-        start_time = time.time()
-        
-        # Generate candidates
-        if self.verbose:
-            print("Generating candidate patterns...")
-        
-        candidates = []
-        
-        for label, count in self.label_stats['vertex_counts'].items():
-            if count >= self.min_support_count:
-                p = Pattern()
-                p.add_vertex(label)
-                p.support = count
-                p.graph_ids = self.label_stats['vertex_labels'][label].copy()
-                candidates.append((p, count))
-        
-        if self.verbose:
-            print(f"  Generated {len(candidates)} candidates\n")
-        
-        # Evaluate with soft constraints
-        if self.verbose:
-            print("Evaluating soft constraints...")
-        
-        accepted_patterns = []
-        
-        for pattern, support in candidates:
-            # Check required constraints first
-            if not self._check_required_constraints(pattern):
-                continue
-            
-            # Compute satisfaction score
-            score, details = self._compute_satisfaction_score(pattern)
-            
-            # Accept if above threshold
-            if score >= self.min_satisfaction:
-                accepted_patterns.append((pattern, support, score, details))
-                self.stats['patterns_accepted'] += 1
-            else:
-                self.stats['patterns_rejected_satisfaction'] += 1
-        
-        if self.verbose:
-            print(f"  Accepted {len(accepted_patterns)} patterns\n")
-        
-        # Sort by satisfaction score
-        accepted_patterns.sort(key=lambda x: x[2], reverse=True)
-        
-        self.stats['runtime'] = time.time() - start_time
-        
-        if self.verbose:
-            self._print_results(accepted_patterns)
-        
-        return accepted_patterns
-    
     def _print_results(self, patterns: List[Tuple[Pattern, int, float, Dict]]):
-        """Print soft constraint mining results"""
+        """Print mining results"""
         print(f"{'='*70}")
         print(f"{'SOFT CONSTRAINT MINING COMPLETE':^70}")
         print(f"{'='*70}")
         
         print(f"\n📊 Results:")
-        print(f"  Patterns evaluated: {self.stats['patterns_evaluated']}")
-        print(f"  Patterns accepted: {self.stats['patterns_accepted']}")
-        print(f"  Rejected (required constraints): {self.stats['patterns_rejected_required']}")
-        print(f"  Rejected (satisfaction): {self.stats['patterns_rejected_satisfaction']}")
+        print(f"  Patterns mined (GSPAN): {self.stats['patterns_mined']}")
+        print(f"  Patterns accepted (Soft): {self.stats['patterns_accepted']}")
+        print(f"  Acceptance rate: {self.stats['patterns_accepted']/max(self.stats['patterns_mined'],1)*100:.1f}%")
         
-        if self.stats['patterns_evaluated'] > 0:
-            accept_rate = self.stats['patterns_accepted'] / self.stats['patterns_evaluated'] * 100
-            print(f"  Acceptance rate: {accept_rate:.1f}%")
-        
-        print(f"  Runtime: {self.stats['runtime']:.2f}s")
+        print(f"\n⏱️  Runtime:")
+        print(f"  GSPAN mining: {self.stats['mining_runtime']:.2f}s")
+        print(f"  Soft evaluation: {self.stats['evaluation_runtime']:.2f}s")
+        print(f"  Total: {self.stats['total_runtime']:.2f}s")
         
         if patterns:
             scores = [s for _, _, s, _ in patterns]
-            supports = [sup for _, sup, _, _ in patterns]
-            sizes = [len(p.vertices) for p, _, _, _ in patterns]
             
             print(f"\n📈 Score Statistics:")
             print(f"  Mean: {np.mean(scores):.3f}")
@@ -276,13 +270,13 @@ class SoftConstraintGSPAN:
             print(f"  Min: {np.min(scores):.3f}")
             print(f"  Max: {np.max(scores):.3f}")
             
-            print(f"\n🏆 Top 20 Patterns by Satisfaction Score:")
+            print(f"\n🏆 Top 15 Patterns by Satisfaction Score:")
             print(f"  {'─'*66}")
-            print(f"  {'Rank':<6} {'Size':<6} {'Supp':<6} {'Score':<8} {'Top Constraints':<38}")
+            print(f"  {'Rank':<6} {'Size':<6} {'Edges':<6} {'Supp':<6} {'Score':<8} {'Top Constraints':<28}")
             print(f"  {'─'*66}")
             
-            for i, (pattern, support, score, details) in enumerate(patterns[:20], 1):
-                # Get top 2 constraint contributions
+            for i, (pattern, support, score, details) in enumerate(patterns[:15], 1):
+                # Get top 2 constraints
                 sorted_constraints = sorted(
                     details.items(),
                     key=lambda x: x[1]['weighted'],
@@ -290,117 +284,92 @@ class SoftConstraintGSPAN:
                 )[:2]
                 
                 constraint_str = ", ".join([
-                    f"{name.split('(')[0]}:{info['satisfaction']:.2f}"
+                    f"{name.split('(')[0][:8]}:{info['satisfaction']:.2f}"
                     for name, info in sorted_constraints
                 ])
                 
-                print(f"  {i:<6} {len(pattern.vertices):<6} {support:<6} "
-                      f"{score:<8.3f} {constraint_str:<38}")
+                print(f"  {i:<6} {len(pattern.vertices):<6} {len(pattern.edges):<6} "
+                      f"{support:<6} {score:<8.3f} {constraint_str:<28}")
             
-            # Score distribution histogram
+            # Score distribution
             print(f"\n📊 Score Distribution:")
             bins = np.linspace(self.min_satisfaction, 1.0, 11)
             hist, _ = np.histogram(scores, bins=bins)
             max_bar = max(hist) if len(hist) > 0 else 1
             
             for i in range(len(hist)):
-                if max_bar > 0:
-                    bar_length = int(hist[i] / max_bar * 40)
-                    bar = '█' * bar_length
-                else:
-                    bar = ''
+                bar_length = int(hist[i] / max_bar * 40) if max_bar > 0 else 0
+                bar = '█' * bar_length
                 print(f"  {bins[i]:.2f}-{bins[i+1]:.2f}: {bar} ({hist[i]})")
-            
-            # Detailed breakdown for top pattern
-            print(f"\n🔍 Detailed Breakdown - Top Pattern:")
-            pattern, support, score, details = patterns[0]
-            print(f"  Pattern: Size={len(pattern.vertices)}, Support={support}")
-            print(f"  Overall Score: {score:.3f}")
-            print(f"\n  Constraint Contributions:")
-            
-            sorted_details = sorted(details.items(), 
-                                   key=lambda x: x[1]['weighted'], 
-                                   reverse=True)
-            
-            for name, info in sorted_details:
-                req_str = " [REQUIRED]" if info['required'] else ""
-                print(f"    {name}:")
-                print(f"      Satisfaction: {info['satisfaction']:.3f}")
-                print(f"      Weight: {info['weight']:.3f} "
-                      f"(normalized: {info['normalized_weight']:.3f})")
-                print(f"      Contribution: {info['weighted']:.3f}{req_str}")
         
         print(f"\n{'='*70}\n")
 
 def main():
-    """Run soft constraint mining on MUTAG"""
+    """Run soft constraint mining with proper GSPAN on MUTAG"""
     
     print(f"\n{'='*70}")
-    print(f"{'MUTAG - SOFT CONSTRAINT SATISFACTION':^70}")
+    print(f"{'MUTAG - SOFT CONSTRAINTS + PROPER GSPAN':^70}")
     print(f"{'='*70}\n")
     
     # Load MUTAG
     loader = DatasetLoader()
-    graphs = loader.load_mutag(subset_size=100)
+    graphs = loader.load_mutag(subset_size=50)  # Use 50 for reasonable speed
     
-    # Define soft constraints for MUTAG
+    # Define soft constraints
     from utils.constraints import (MaxSizeConstraint, MinSizeConstraint,
                                    ConnectedConstraint, DiameterConstraint)
     
     soft_constraints = [
-        SoftConstraint(MaxSizeConstraint(12), weight=0.25, required=False),
-        SoftConstraint(MinSizeConstraint(3), weight=0.20, required=False),
-        SoftConstraint(ConnectedConstraint(), weight=0.40, required=True),  # Must be connected
-        SoftConstraint(DiameterConstraint(6), weight=0.15, required=False),
+        SoftConstraint(MaxSizeConstraint(6), weight=0.25, required=False),
+        SoftConstraint(MinSizeConstraint(2), weight=0.20, required=False),
+        SoftConstraint(ConnectedConstraint(), weight=0.40, required=True),
+        SoftConstraint(DiameterConstraint(4), weight=0.15, required=False),
     ]
     
-    print(f"Soft Constraints:")
-    for sc in soft_constraints:
-        req = " [REQUIRED]" if sc.required else " [optional]"
-        print(f"  {sc.constraint.name}: weight={sc.weight}{req}")
+    # Hard constraints for GSPAN
+    hard_constraints = MUTAGConstraints.basic_chemical()
     
-    # Run soft constraint mining
-    miner = SoftConstraintGSPAN(
+    print(f"Configuration:")
+    print(f"  Dataset: {len(graphs)} graphs")
+    print(f"  Min support: 0.25 (25%)")
+    print(f"  Min satisfaction: 0.6 (60%)")
+    print(f"  Max pattern size: 5")
+    
+    # Run mining
+    miner = SoftConstraintProperGSPAN(
         database=graphs,
-        min_support=0.15,
+        min_support=0.25,
         soft_constraints=soft_constraints,
-        min_satisfaction=0.65,  # Accept patterns with ≥65% satisfaction
+        hard_constraints=hard_constraints,
+        min_satisfaction=0.6,
+        max_pattern_size=5,
         verbose=True
     )
     
-    patterns = miner.mine_with_soft_constraints()
-    
-    # Visualize
-    print(f"\nGenerating visualizations...")
-    visualizer = PatternVisualizer()
-    
-    # Convert to (Pattern, support) tuples
-    pattern_tuples = [(p, sup) for p, sup, _, _ in patterns]
-    
-    fig = visualizer.plot_pattern_distribution(pattern_tuples,
-                                               title="MUTAG Soft Constraint Results")
+    patterns = miner.mine()
     
     # Save results
     import os
     os.makedirs('results', exist_ok=True)
-    visualizer.save_all_plots('results')
     
-    with open('results/soft_constraint_results.txt', 'w') as f:
-        f.write("MUTAG - Soft Constraint Satisfaction Results\n")
+    with open('results/soft_proper_gspan_results.txt', 'w') as f:
+        f.write("MUTAG - Soft Constraints + Proper GSPAN Results\n")
         f.write("="*70 + "\n\n")
+        f.write(f"Patterns mined: {miner.stats['patterns_mined']}\n")
         f.write(f"Patterns accepted: {len(patterns)}\n")
-        f.write(f"Min satisfaction: {miner.min_satisfaction}\n")
-        f.write(f"Runtime: {miner.stats['runtime']:.2f}s\n\n")
+        f.write(f"Mining runtime: {miner.stats['mining_runtime']:.2f}s\n")
+        f.write(f"Total runtime: {miner.stats['total_runtime']:.2f}s\n\n")
         
         f.write("Top 20 Patterns:\n")
         f.write("-"*70 + "\n")
-        f.write(f"{'Rank':<6} {'Size':<6} {'Support':<8} {'Score':<10}\n")
+        f.write(f"{'Rank':<6} {'Size':<6} {'Edges':<6} {'Support':<8} {'Score':<10}\n")
         f.write("-"*70 + "\n")
         
         for i, (pattern, support, score, details) in enumerate(patterns[:20], 1):
-            f.write(f"{i:<6} {len(pattern.vertices):<6} {support:<8} {score:<10.3f}\n")
+            f.write(f"{i:<6} {len(pattern.vertices):<6} {len(pattern.edges):<6} "
+                   f"{support:<8} {score:<10.3f}\n")
     
-    print(f"\n✓ Results saved to 'results/soft_constraint_results.txt'")
+    print(f"✓ Results saved to 'results/soft_proper_gspan_results.txt'")
     print(f"{'='*70}\n")
 
 if __name__ == "__main__":
